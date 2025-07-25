@@ -1,24 +1,42 @@
-const axios = require('axios');
+require('dotenv').config(); // Load environment variables
 
-// Get real crypto data from CoinGecko API
+const CoinbasePro = require('coinbase-pro-node');
+
+// Initialize Coinbase Pro Client
+const client = new CoinbasePro.AuthenticatedClient(
+  process.env.API_KEY, 
+  process.env.API_SECRET, 
+  process.env.PASSPHRASE
+);
+
+// Get real crypto data from Coinbase API
 exports.getCryptoData = async (req, res) => {
   try {
-    const response = await axios.get(
-      'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false'
-    );
+    // Get real-time market data for top cryptocurrencies (use `getProductTicker` for real-time data)
+    const products = await client.rest.product.getProducts();
     
-    const cryptoData = response.data.map(coin => ({
-      id: coin.id,
-      symbol: coin.symbol,
-      name: coin.name,
-      price: coin.current_price,
-      change: coin.price_change_percentage_24h,
-      volume: coin.total_volume,
-      marketCap: coin.market_cap
-    }));
+    // Only select a subset of coins you're interested in
+    const supportedCoins = ['BTC-USD', 'ETH-USD', 'LTC-USD', 'ADA-USD', 'SOL-USD']; // Customize this list
     
+    const cryptoData = [];
+
+    for (const productId of supportedCoins) {
+      const ticker = await client.rest.product.getTicker(productId); // Get real-time price data
+      
+      const coin = {
+        symbol: productId.split('-')[0], // e.g., BTC, ETH, LTC
+        price: ticker.price,
+        change: ticker.change24h, // 24h price change
+        volume: ticker.volume_24h, // 24h trading volume
+        marketCap: ticker.last, // or use a custom calculation depending on the API response
+      };
+
+      cryptoData.push(coin);
+    }
+
     res.json(cryptoData);
   } catch (error) {
-    res.status(500).json({ message: 'Error fetching crypto data' });
+    console.error(error);
+    res.status(500).json({ message: 'Error fetching crypto data from Coinbase' });
   }
 };

@@ -1,10 +1,28 @@
+require('dotenv').config(); // For loading API keys
+const CoinbasePro = require('coinbase-pro-node');
 const Transaction = require('../models/Transaction');
 const User = require('../models/User');
+
+// Initialize Coinbase Pro Client
+const client = new CoinbasePro.AuthenticatedClient(
+  process.env.API_KEY,
+  process.env.API_SECRET,
+  process.env.PASSPHRASE
+);
 
 // Get user transactions
 exports.getUserTransactions = async (req, res) => {
   try {
-    const transactions = await Transaction.find({ userId: req.user._id }).sort('-date');
+    const { data: transactions, error } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('user_id', req.user.id)  // Use req.user.id instead of req.user._id
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ message: error.message });
+    }
+
     res.json(transactions);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -53,26 +71,45 @@ exports.sendMoney = async (req, res) => {
   }
 };
 
-// Buy cryptocurrency
+// Buy cryptocurrency using Coinbase API
 exports.buyCrypto = async (req, res) => {
   try {
-    const { coinId, amount, price } = req.body;
-    const totalCost = amount * price;
+    const { coinId, amount } = req.body;
     
-    if (req.user.balance < totalCost) {
-      return res.status(400).json({ message: 'Insufficient balance' });
+    // Check if coinId is valid (e.g., BTC, ETH, etc.)
+    const validCoins = ['BTC', 'ETH', 'LTC', 'ADA', 'SOL']; // Add more coins as needed
+    if (!validCoins.includes(coinId.toUpperCase())) {
+      return res.status(400).json({ message: 'Invalid coin ID' });
     }
 
+    // Fetch the current price from Coinbase for the selected coin
+    const coinPair = `${coinId}-USD`; // e.g., BTC-USD
+    const ticker = await client.rest.product.getTicker(coinPair);
+
+    if (!ticker) {
+      return res.status(500).json({ message: `Error fetching price for ${coinId}` });
+    }
+
+    const price = parseFloat(ticker.price);
+    const totalCost = amount * price; // Total cost for the transaction
+
+    // Ensure the user has enough balance to complete the purchase
+    if (req.user.balance < totalCost) {
+      return res.status(400).json({ message: 'Insufficient balance to buy crypto' });
+    }
+
+    // Update user balance and crypto balance
     req.user.balance -= totalCost;
-    req.user.bitcoinBalance += amount;
-    
+    req.user.bitcoinBalance += amount; // For simplicity, assuming they are buying BTC. Adjust for other coins.
+
+    // Save the updated user information
     await req.user.save();
-    
-    // Record transaction
+
+    // Record the crypto purchase transaction
     await Transaction.create({
       userId: req.user._id,
       type: 'crypto_buy',
-      amount: amount,
+      amount,
       currency: coinId.toUpperCase(),
       cryptoAmount: amount,
       usdAmount: totalCost,
@@ -80,9 +117,11 @@ exports.buyCrypto = async (req, res) => {
       coinSymbol: coinId.toUpperCase()
     });
 
+    // Respond with the updated balances
     res.json({ 
       balance: req.user.balance, 
-      bitcoinBalance: req.user.bitcoinBalance 
+      bitcoinBalance: req.user.bitcoinBalance, // Update this for the specific coin they bought
+      message: `Successfully bought ${amount} ${coinId.toUpperCase()} for $${totalCost.toFixed(2)}`
     });
   } catch (error) {
     res.status(500).json({ message: error.message });

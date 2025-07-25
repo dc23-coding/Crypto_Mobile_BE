@@ -1,13 +1,51 @@
-const User = require('../models/User');
-const jwt = require('jsonwebtoken');
+const { createClient } = require('@supabase/supabase-js');
+const bcrypt = require('bcryptjs');  // Optional: If you want to hash passwords manually
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
-// User registration
+// Initialize Supabase client
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// User registration (signup)
 exports.register = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
-    const user = await User.create({ name, email, password });
-    const token = generateToken(user._id);
-    res.status(201).json({ token, user });
+    const { email, password, name } = req.body;
+
+    // Check if the email is already registered
+    const { data: existingUser, error: checkError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .single();
+
+    if (existingUser) {
+      return res.status(400).json({ message: 'Email already exists' });
+    }
+
+    // Create user in Supabase Auth
+    const { user, error } = await supabase.auth.signUp({
+      email: req.body.email,
+      password: req.body.password,
+    });
+
+    if (error) {
+      return res.status(400).json({ message: error.message });
+    }
+
+    // Create a record in the 'users' table
+    const { data: userData, error: userError } = await supabase
+      .from('users')
+      .insert([
+        { email, password, name, id: user.id }  // Store only the basic user info
+      ]);
+
+    if (userError) {
+      return res.status(400).json({ message: userError.message });
+    }
+
+    // Return the created user and the auth token
+    const token = user.access_token;
+    res.status(201).json({ token, user: userData[0] });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
@@ -17,27 +55,40 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user = await User.findOne({ email }).select('+password');
-    
-    if (!user || !(await user.matchPassword(password))) {
+
+    // Login with Supabase Auth
+    const { user, error } = await supabase.auth.signIn({
+      email,
+      password
+    });
+
+    if (error) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    const token = generateToken(user._id);
-    res.json({ token, user });
+    // Query user info from the 'users' table (using the Supabase auth user ID)
+    const { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', user.id)
+      .single();
+
+    if (userError) {
+      return res.status(500).json({ message: userError.message });
+    }
+
+    // Return the user and token
+    const token = user.access_token;
+    res.json({ token, user: userData });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
 };
 
-// Get current user
-exports.getMe = async (req, res) => {
-  res.status(200).json(req.user);
-};
-
-// Protect routes
+// Protect routes (middleware to check if user is authenticated)
 exports.protect = async (req, res, next) => {
   let token;
+  
   if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
     token = req.headers.authorization.split(' ')[1];
   }
@@ -47,14 +98,17 @@ exports.protect = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = await User.findById(decoded.id);
+    // Verify the token using Supabase's auth system
+    const { user, error } = await supabase.auth.api.getUser(token);
+
+    if (error || !user) {
+      return res.status(401).json({ message: 'Not authorized' });
+    }
+
+    // Attach user to the request object for use in other routes
+    req.user = user;
     next();
   } catch (error) {
     res.status(401).json({ message: 'Not authorized' });
   }
 };
-
-function generateToken(id) {
-  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
-}

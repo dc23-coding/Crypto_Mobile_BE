@@ -18,7 +18,7 @@ export const POPUP_STYLES = `
   #inline-editor-popup {
     width: calc(100% - 20px);
   }
-}
+
 
 #inline-editor-popup.is-active {
   display: flex;
